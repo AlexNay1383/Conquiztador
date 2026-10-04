@@ -22,14 +22,7 @@ class BaseQuestion(models.Model):
         return self.text
 
 class ChoiceQuestion(BaseQuestion):
-    def clean(self):
-        super().clean()
-        # We can't easily validate related objects in model clean before they are saved,
-        # but the milestone says:
-        # - Точно четири свързани AnswerOption обекта
-        # - Точно един AnswerOption с is_correct=True
-        # We will handle this in form/admin or in a separate validator method if needed.
-        pass
+    pass
 
 class NumericQuestion(BaseQuestion):
     correct_answer = models.IntegerField()
