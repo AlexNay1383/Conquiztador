@@ -34,6 +34,18 @@ QUESTION_TYPE_CHOICES = [
     (NUMERIC, "Numeric"),
 ]
 
+
+COLOR_RED = "red"
+COLOR_GREEN = "green"
+COLOR_BLUE = "blue"
+
+COLOR_CHOICES = [
+    (COLOR_RED, "Red"),
+    (COLOR_GREEN, "Green"),
+    (COLOR_BLUE, "Blue"),
+]
+
+
 class Game(models.Model):
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=WAITING)
@@ -47,13 +59,14 @@ class Game(models.Model):
 class GamePlayer(models.Model):
     game = models.ForeignKey(Game, on_delete=models.CASCADE, related_name='players')
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    color = models.CharField(max_length=10, choices=COLOR_CHOICES)
     player_order = models.PositiveSmallIntegerField()
     score = models.IntegerField(default=0)
     is_active = models.BooleanField(default=True)
     joined_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        unique_together = [['game', 'user'], ['game', 'player_order']]
+        unique_together = [['game', 'user'], ['game', 'player_order'], ['game', 'color']]
 
     def __str__(self):
         return f"{self.user.username} in Game #{self.game_id}"
@@ -88,3 +101,18 @@ class RoundAnswer(models.Model):
 
     def __str__(self):
         return f"Answer by {self.player.user.username} in Round {self.round.number}"
+
+
+class WaitingRoomEntry(models.Model):
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='waiting_room_entry',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name_plural = "Waiting room entries"
+
+    def __str__(self):
+        return f"{self.user.username} waiting since {self.created_at}"

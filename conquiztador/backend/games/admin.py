@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Game, GamePlayer, Round, RoundAnswer
+from .models import Game, GamePlayer, Round, RoundAnswer, WaitingRoomEntry
 
 class GamePlayerInline(admin.TabularInline):
     model = GamePlayer
@@ -29,3 +29,9 @@ class RoundAdmin(admin.ModelAdmin):
 class RoundAnswerAdmin(admin.ModelAdmin):
     list_display = ('player', 'round', 'is_correct', 'points_awarded')
     list_filter = ('round__game',)
+
+@admin.register(WaitingRoomEntry)
+class WaitingRoomEntryAdmin(admin.ModelAdmin):
+    list_display = ('user', 'created_at')
+    list_filter = ('created_at',)
+

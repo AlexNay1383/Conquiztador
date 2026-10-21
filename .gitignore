@@ -1,16 +1,16 @@
 # Python
-backend/.venv/
+conquiztador/backend/.venv/
 **/__pycache__/
 *.py[cod]
 *.sqlite3
 
 # Django
-backend/staticfiles/
-backend/media/
+conquiztador/backend/staticfiles/
+conquiztador/backend/media/
 
 # Node
-frontend/node_modules/
-frontend/dist/
+conquiztador/frontend/node_modules/
+conquiztador/frontend/dist/
 
 # Tests
 .coverage

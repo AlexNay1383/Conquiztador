@@ -17,7 +17,7 @@ class GameModelsTests(TestCase):
 
     def test_game_player(self):
         g = Game.objects.create(created_by=self.user)
-        p = GamePlayer.objects.create(game=g, user=self.user, player_order=1)
+        p = GamePlayer.objects.create(game=g, user=self.user, player_order=1, color="red")
         self.assertEqual(p.score, 0)
 
     def test_round_creation(self):
@@ -27,7 +27,7 @@ class GameModelsTests(TestCase):
 
     def test_round_answer(self):
         g = Game.objects.create(created_by=self.user)
-        p = GamePlayer.objects.create(game=g, user=self.user, player_order=1)
+        p = GamePlayer.objects.create(game=g, user=self.user, player_order=1, color="red")
         r = Round.objects.create(game=g, number=1, question_type="numeric", numeric_question=self.num_q)
         ans = RoundAnswer.objects.create(round=r, player=p, numeric_value=1, is_correct=True, points_awarded=10)
         self.assertEqual(ans.points_awarded, 10)

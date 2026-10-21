@@ -15,14 +15,14 @@ class GameConstraintsTests(TestCase):
         self.num = NumericQuestion.objects.create(category=self.cat, text="?", correct_answer=1)
 
     def test_unique_player_in_game(self):
-        GamePlayer.objects.create(game=self.g, user=self.u1, player_order=1)
+        GamePlayer.objects.create(game=self.g, user=self.u1, player_order=1, color="red")
         with self.assertRaises(IntegrityError):
-            GamePlayer.objects.create(game=self.g, user=self.u1, player_order=2)
+            GamePlayer.objects.create(game=self.g, user=self.u1, player_order=2, color="green")
 
     def test_unique_order_in_game(self):
-        GamePlayer.objects.create(game=self.g, user=self.u1, player_order=1)
+        GamePlayer.objects.create(game=self.g, user=self.u1, player_order=1, color="red")
         with self.assertRaises(IntegrityError):
-            GamePlayer.objects.create(game=self.g, user=self.u2, player_order=1)
+            GamePlayer.objects.create(game=self.g, user=self.u2, player_order=1, color="green")
 
     def test_unique_round_number_in_game(self):
         Round.objects.create(game=self.g, number=1, question_type="numeric", numeric_question=self.num)
@@ -30,7 +30,7 @@ class GameConstraintsTests(TestCase):
             Round.objects.create(game=self.g, number=1, question_type="numeric", numeric_question=self.num)
 
     def test_unique_answer_in_round(self):
-        p1 = GamePlayer.objects.create(game=self.g, user=self.u1, player_order=1)
+        p1 = GamePlayer.objects.create(game=self.g, user=self.u1, player_order=1, color="red")
         r = Round.objects.create(game=self.g, number=1, question_type="numeric", numeric_question=self.num)
         RoundAnswer.objects.create(round=r, player=p1, numeric_value=1)
         with self.assertRaises(IntegrityError):
