@@ -1,0 +1,22 @@
+name: conquiztador
+
+services:
+  db:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-conquiztador}
+      POSTGRES_USER: ${DB_USER:-conquiztador}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set in backend/.env}
+    ports:
+      - "${DB_PORT:-5433}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  pgdata:
