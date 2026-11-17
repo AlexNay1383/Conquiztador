@@ -89,3 +89,41 @@ The "four options, one correct" rule spans several rows, so it is enforced in ap
 - `ChoiceQuestion.clean()` validates the saved options.
 - The admin inline accepts exactly four options and requires exactly one to be correct.
 - `ChoiceQuestion.objects.playable()` returns only questions that satisfy the rule; gameplay draws questions only from it.
+
+## Games and rounds (M03)
+
+The `games` app models a game (`Game`), the three participants (`Player`: user, color, score) and the rounds (`Round`: number, type, status, winner).
+
+- **Game lifecycle:** `waiting` → `active` → `completed`. A game starts with exactly three players; a completed game accepts no players or rounds.
+- **Round lifecycle:** `pending` → `active` → `completed`. Numbers are `1, 2, …` per game. A new round waits until the previous one is completed. `Game.get_current_round()` returns the round with the highest number.
+
+### Service layer
+
+State changes go through `games.services`. Every operation runs in a transaction and starts by locking the game row (`SELECT … FOR UPDATE`), so concurrent operations on one game are serialized.
+
+| Operation | Purpose |
+|---|---|
+| `create_game()` | New `waiting` game |
+| `add_player(game_id, user_id, color=None)` / `remove_player(player_id)` | Only while `waiting`; at most three players |
+| `start_game(game_id)` | `waiting` → `active` |
+| `complete_game(game_id)` | `active` → `completed` when no round is unfinished |
+| `create_round(game_id, type)` / `start_round(round_id)` / `complete_round(round_id, winner_id)` | Round lifecycle |
+
+Refusals raise a subclass of `games.exceptions.GameError` with a stable `code` and a Bulgarian `message`:
+
+- `NotFoundError` — a referenced record is missing (`game_not_found`, `round_not_found`, …)
+- `InvalidInputError` — bad arguments (`color_taken`, `winner_not_in_game`, …)
+- `InvalidStateError` — not allowed right now (`game_not_waiting`, `game_full`, `round_in_progress`, …)
+
+```python
+try:
+    services.add_player(game.pk, user.pk, "red")
+except InvalidInputError as error:
+    error.code  # "color_taken"
+```
+
+### Integrity
+
+- **Database constraints:** unique user and unique color per game; non-negative score; valid choice values; unique round number per game; at most one `active` round per game; `completed_at` set exactly when a round is `completed`; no winner before completion.
+- **Application rules:** the winner belongs to the same game; at most three players; changes only while `waiting`.
+- **Admin:** shows game status and rounds read-only, because lifecycle changes go through services. Players can be added, edited or removed only while their game is `waiting`.
