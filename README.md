@@ -245,3 +245,75 @@ All mutually non-adjacent triples are enumerated from the definition (189 for th
 ### Database
 
 PostgreSQL 17 (`backend/compose.yaml`) at the default `READ COMMITTED` isolation level. The guarantees rely on its row-level `SELECT … FOR UPDATE` locks, transactional rollback of bulk inserts, and deferred foreign-key checks. SQLite is not supported: it ignores `select_for_update`, and its database-wide write lock would turn these races into "database is locked" errors instead of the documented refusals.
+
+## Rounds (M06)
+
+A `city_capture` round is played with numeric questions. Every player has 10 seconds per question, and the round decides first and second place.
+
+### Operations (`games.services`)
+
+| Operation | Effect |
+|---|---|
+| `create_city_capture_round(game_id)` | `pending` round for the three players with its first random unused numeric question; the clock does not run yet |
+| `start_round(round_id)` | `active`; the first question starts now and ends 10 s later |
+| `submit_answer(round_id, player_id, value)` | Accepts one integer per player per question; closes the question when everyone has answered |
+| `close_question(round_id)` | Explicit processing without a new answer; refused (`question_still_open`) before the deadline unless everyone has answered |
+| `get_round_state(round_id)` | Read-only snapshot for reloading: current question, deadline, remaining time, who answered, ranking, history |
+
+Every operation requires an active game and runs inside the game's row lock. Round numbers are `max + 1`. A game has at most one unfinished round (enforced by a partial unique index). `Game.get_current_round()` is unchanged.
+
+### Rules
+
+- **Trusted time:** the arrival moment is `games.clock.now()`, taken when the request is processed and before the deadline check. The same value is stored as `received_at` and used for speed. Answers are accepted only while `now < deadline`; at the deadline or after, they are refused. Client timestamps are never used, and times keep microseconds.
+- **Input:** `int`, or a string of an integer such as `" -42 "`. Floats (even `12.0`), booleans, decimals and out-of-range numbers are refused with `invalid_answer`, so nothing is silently truncated. A refused attempt does not use the player's answer. A second accepted answer is refused (`already_answered`) and doesn't replace the first.
+- **Ranking:** smaller `|answer − correct|` wins; at equal closeness the earlier arrival wins, on either side of the correct value. The result depends only on these values, not on record order. Players who didn't answer get no place. With a single answer, only first place is awarded.
+- **Follow-ups:**
+  - A full tie (same closeness and same arrival) for a needed place gets a new numeric question, only for the tied players and only for the tied places. Places already decided stay.
+  - No answers at all gets a new question for the same group.
+  - A follow-up is activated immediately with its own new 10 seconds, in the same transaction that closes the previous question.
+  - At most three questions per round.
+- **End:** the round completes when the needed places are decided, when the limit is reached, or when the bank has no suitable unused question.
+  - Missing places stay empty, and `Round.unresolved_reason` records why: `question_limit` (takes precedence), `question_bank_exhausted` or `not_enough_answers`.
+  - `winner` is first place, or empty with a reason; a database check enforces that a completed round without a winner has a reason.
+  - A completed round can't be closed again (`round_completed`).
+
+### Data
+
+- `Round` gains `participants`, `places_needed` (fixed at creation), `started_at` and `unresolved_reason`.
+- `RoundQuestion` is one asked question: its round, a sequence of 1–3, its participant group, the places it decides (`first_place`, `place_count`), status, `started_at`, `deadline`, and a **snapshot** of `text` and `correct_answer`.
+  - It also stores `game`, so a unique index can forbid asking a bank question twice in one game.
+  - Bank questions that were asked are `PROTECT`ed from deletion; edits to them don't affect asked questions.
+- `RoundAnswer` (question, player, value, `received_at`), unique per question and player.
+- `RoundPlacement` (round, place, player, deciding question), unique per place and per player.
+
+**Chosen design:** one row per asked question, with a content snapshot and its own participants, places and timing. History is append-only: a follow-up never overwrites earlier answers, and `get_round_state()` rebuilds the current question, remaining time and ranking from rows alone.
+
+**Rejected alternative:** a single "current question" foreign key plus answer columns on `Round`. Every follow-up would overwrite the previous question's data, a tie-break group couldn't be expressed, and a later edit in the bank would silently change how a past round is judged.
+
+### Errors
+
+The caller tells the outcomes apart by exception class and `code` (see M03):
+
+- `NotFoundError`: `round_not_found`, `player_not_found`
+- `InvalidInputError`: `invalid_answer`, `player_not_participant`
+- `InvalidStateError`: `round_not_started`, `deadline_passed`, `already_answered`, `question_still_open`, `round_completed`, `round_in_progress`, `no_question_available`, `game_not_active`
+
+Example from the project:
+
+```python
+>>> services.submit_answer(round_.pk, player.pk, "12.5")
+games.exceptions.InvalidInputError: Отговорът трябва да е цяло число.   # .code == "invalid_answer"
+```
+
+### Demo
+
+```bash
+python backend/manage.py demo_round                     # offsets from the correct answer: 3, -3, 40
+python backend/manage.py demo_round --offsets 5 -5 5    # equal closeness: the earlier answer wins
+```
+
+Each run creates a new game for the users `demo_red`, `demo_green` and `demo_blue`, plays one round and prints the stored ranking.
+
+### Concurrent answers
+
+Two simultaneous answers from one player are serialized by the game row lock. The second sees the first and is refused with `already_answered`. The unique index on `(question, player)` is a database-level backstop. `test_round_concurrency.py` checks this on real threads, plus the case where the last two answers arrive together and close the question exactly once.

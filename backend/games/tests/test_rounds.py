@@ -4,52 +4,44 @@ from django.test import TestCase
 from django.utils import timezone
 
 from games import services
-from games.exceptions import InvalidInputError, InvalidStateError
+from games.exceptions import InvalidStateError
 from games.models import Game, Round
 
-from .factories import create_game_with_players
+from .factories import create_active_game, create_game_with_players, create_numeric_questions
 
 
 class RoundLifecycleTests(TestCase):
     def setUp(self):
-        self.game = create_game_with_players(3, status=Game.Status.ACTIVE)
-        self.player = self.game.players.first()
+        self.game, self.players = create_active_game()
+        create_numeric_questions(10, 20, 30)
+
+    def finish(self, round_):
+        services.start_round(round_.pk)
+        for offset, player in enumerate(self.players):
+            question = round_.get_current_question()
+            services.submit_answer(round_.pk, player.pk, question.correct_answer + offset)
 
     def test_create_round(self):
-        round_ = services.create_round(self.game.pk, Round.Type.CITY_CAPTURE)
+        round_ = services.create_city_capture_round(self.game.pk)
 
-        self.assertEqual(round_.game, self.game)
-        self.assertEqual(round_.number, 1)
-        self.assertEqual(round_.type, Round.Type.CITY_CAPTURE)
+        self.assertEqual((round_.game, round_.number, round_.type), (self.game, 1, Round.Type.CITY_CAPTURE))
         self.assertEqual(round_.status, Round.Status.PENDING)
         self.assertIsNone(round_.winner)
         self.assertIsNone(round_.completed_at)
 
-    def test_complete_round(self):
-        round_ = services.create_round(self.game.pk, Round.Type.CITY_CAPTURE)
-        services.start_round(round_.pk)
-
-        services.complete_round(round_.pk, self.player.pk)
-
-        round_.refresh_from_db()
-        self.assertEqual(round_.status, Round.Status.COMPLETED)
-        self.assertEqual(round_.winner, self.player)
-        self.assertIsNotNone(round_.completed_at)
-
     def test_next_round_gets_the_next_number(self):
-        first = services.create_round(self.game.pk, Round.Type.CITY_CAPTURE)
-        services.start_round(first.pk)
-        services.complete_round(first.pk, self.player.pk)
+        first = services.create_city_capture_round(self.game.pk)
+        self.finish(first)
 
-        second = services.create_round(self.game.pk, Round.Type.BATTLE)
+        second = services.create_city_capture_round(self.game.pk)
 
         self.assertEqual(second.number, 2)
 
     def test_new_round_waits_for_the_previous_one(self):
-        services.create_round(self.game.pk, Round.Type.CITY_CAPTURE)
+        services.create_city_capture_round(self.game.pk)
 
         with self.assertRaises(InvalidStateError) as context:
-            services.create_round(self.game.pk, Round.Type.CITY_CAPTURE)
+            services.create_city_capture_round(self.game.pk)
 
         self.assertEqual(context.exception.code, "round_in_progress")
 
@@ -57,39 +49,21 @@ class RoundLifecycleTests(TestCase):
         waiting = create_game_with_players(3, prefix="waiting")
 
         with self.assertRaises(InvalidStateError) as context:
-            services.create_round(waiting.pk, Round.Type.CITY_CAPTURE)
+            services.create_city_capture_round(waiting.pk)
 
         self.assertEqual(context.exception.code, "game_not_active")
 
     def test_lifecycle_order_is_enforced(self):
-        round_ = services.create_round(self.game.pk, Round.Type.CITY_CAPTURE)
-
-        with self.assertRaises(InvalidStateError):
-            services.complete_round(round_.pk, self.player.pk)
+        round_ = services.create_city_capture_round(self.game.pk)
         services.start_round(round_.pk)
-        with self.assertRaises(InvalidStateError):
+
+        with self.assertRaises(InvalidStateError) as context:
             services.start_round(round_.pk)
 
-    def test_unknown_round_type_is_refused(self):
-        with self.assertRaises(InvalidInputError):
-            services.create_round(self.game.pk, "duel")
+        self.assertEqual(context.exception.code, "round_not_pending")
 
 
 class RoundWinnerTests(TestCase):
-    def test_winner_from_another_game_is_refused(self):
-        game = create_game_with_players(3, status=Game.Status.ACTIVE)
-        stranger = create_game_with_players(3, prefix="other", status=Game.Status.ACTIVE).players.first()
-        round_ = services.create_round(game.pk, Round.Type.CITY_CAPTURE)
-        services.start_round(round_.pk)
-
-        with self.assertRaises(InvalidInputError) as context:
-            services.complete_round(round_.pk, stranger.pk)
-
-        self.assertEqual(context.exception.code, "winner_not_in_game")
-        round_.refresh_from_db()
-        self.assertEqual(round_.status, Round.Status.ACTIVE)
-        self.assertIsNone(round_.winner)
-
     def test_model_validation_rejects_winner_from_another_game(self):
         game = create_game_with_players(3, status=Game.Status.ACTIVE)
         stranger = create_game_with_players(3, prefix="other").players.first()
@@ -99,6 +73,7 @@ class RoundWinnerTests(TestCase):
             type=Round.Type.BATTLE,
             status=Round.Status.COMPLETED,
             winner=stranger,
+            started_at=timezone.now(),
             completed_at=timezone.now(),
         )
 
@@ -111,10 +86,12 @@ class RoundWinnerTests(TestCase):
 class CurrentRoundTests(TestCase):
     def test_current_round_has_the_highest_number(self):
         game = create_game_with_players(3, status=Game.Status.ACTIVE)
+        winner = game.players.first()
         now = timezone.now()
-        Round.objects.create(game=game, number=2, type=Round.Type.BATTLE, status="completed", completed_at=now)
+        done = dict(status="completed", winner=winner, started_at=now, completed_at=now)
+        Round.objects.create(game=game, number=2, type=Round.Type.BATTLE, **done)
         latest = Round.objects.create(game=game, number=3, type=Round.Type.BONUS)
-        Round.objects.create(game=game, number=1, type=Round.Type.CITY_CAPTURE, status="completed", completed_at=now)
+        Round.objects.create(game=game, number=1, type=Round.Type.CITY_CAPTURE, **done)
 
         self.assertEqual(game.get_current_round(), latest)
 
@@ -127,6 +104,8 @@ class CurrentRoundTests(TestCase):
 class RoundConstraintTests(TestCase):
     def setUp(self):
         self.game = create_game_with_players(3, status=Game.Status.ACTIVE)
+        self.winner = self.game.players.first()
+        self.now = timezone.now()
 
     def assert_rejected(self, **fields):
         with self.assertRaises(IntegrityError), transaction.atomic():
@@ -137,17 +116,34 @@ class RoundConstraintTests(TestCase):
 
         self.assert_rejected(number=1, type=Round.Type.BATTLE)
 
-    def test_at_most_one_active_round(self):
-        Round.objects.create(game=self.game, number=1, type=Round.Type.CITY_CAPTURE, status="active")
+    def test_at_most_one_unfinished_round(self):
+        Round.objects.create(game=self.game, number=1, type=Round.Type.CITY_CAPTURE)
 
-        self.assert_rejected(number=2, type=Round.Type.BATTLE, status="active")
+        self.assert_rejected(number=2, type=Round.Type.BATTLE)
+        self.assert_rejected(number=2, type=Round.Type.BATTLE, status="active", started_at=self.now)
 
-    def test_completion_fields_match_status(self):
-        winner = self.game.players.first()
-        self.assert_rejected(number=1, type=Round.Type.BATTLE, status="completed")
-        self.assert_rejected(number=1, type=Round.Type.BATTLE, completed_at=timezone.now())
-        self.assert_rejected(number=1, type=Round.Type.BATTLE, winner=winner)
+    def test_lifecycle_fields_match_status(self):
+        cases = [
+            dict(status="completed", started_at=self.now, winner=self.winner),
+            dict(completed_at=self.now),
+            dict(winner=self.winner),
+            dict(started_at=self.now),
+            dict(status="active"),
+            dict(unresolved_reason="question_limit"),
+        ]
+        for fields in cases:
+            with self.subTest(**{key: str(value) for key, value in fields.items()}):
+                self.assert_rejected(number=1, type=Round.Type.BATTLE, **fields)
+
+    def test_completed_round_without_winner_needs_a_reason(self):
+        completed = dict(status="completed", started_at=self.now, completed_at=self.now)
+        self.assert_rejected(number=1, type=Round.Type.BATTLE, **completed)
+
+        Round.objects.create(
+            game=self.game, number=1, type=Round.Type.BATTLE, unresolved_reason="question_limit", **completed
+        )
 
     def test_unknown_choices_are_rejected(self):
         self.assert_rejected(number=1, type="duel")
         self.assert_rejected(number=1, type=Round.Type.BATTLE, status="paused")
+        self.assert_rejected(number=1, type=Round.Type.BATTLE, unresolved_reason="bored")

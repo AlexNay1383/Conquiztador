@@ -74,11 +74,11 @@ class CompleteGameTests(TestCase):
         with self.assertRaises(InvalidStateError):
             services.add_player(game.pk, user.pk)
         with self.assertRaises(InvalidStateError):
-            services.create_round(game.pk, Round.Type.CITY_CAPTURE)
+            services.create_city_capture_round(game.pk)
 
     def test_game_with_unfinished_round_cannot_be_completed(self):
         game = create_game_with_players(3, status=Game.Status.ACTIVE)
-        services.create_round(game.pk, Round.Type.CITY_CAPTURE)
+        Round.objects.create(game=game, number=1, type=Round.Type.CITY_CAPTURE)
 
         with self.assertRaises(InvalidStateError) as context:
             services.complete_game(game.pk)

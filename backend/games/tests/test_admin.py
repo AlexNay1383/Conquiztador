@@ -4,7 +4,16 @@ from django.urls import reverse
 
 from games.models import Capital, Game, Player
 
-from .factories import assign_capitals, build_map, create_game_with_players, create_user
+from games import services
+
+from .factories import (
+    assign_capitals,
+    build_map,
+    create_active_game,
+    create_game_with_players,
+    create_numeric_questions,
+    create_user,
+)
 
 
 class GamesAdminTests(TestCase):
@@ -99,6 +108,24 @@ class GamesAdminTests(TestCase):
         view = self.client.get(reverse("admin:games_territory_change", args=[territory.pk]))
         self.assertEqual(view.status_code, 200)
         self.assertContains(view, "Скали")
+
+    def test_round_pages_show_questions_answers_and_placements(self):
+        game, players = create_active_game(prefix="admin")
+        create_numeric_questions(100)
+        round_ = services.create_city_capture_round(game.pk)
+        services.start_round(round_.pk)
+        for offset, player in enumerate(players):
+            services.submit_answer(round_.pk, player.pk, 100 + offset)
+        question = round_.questions.get()
+
+        round_page = self.client.get(reverse("admin:games_round_change", args=[round_.pk]))
+        question_page = self.client.get(reverse("admin:games_roundquestion_change", args=[question.pk]))
+        changelist = self.client.get(reverse("admin:games_roundquestion_changelist"), {"kind__exact": "numeric"})
+
+        self.assertContains(round_page, question.text)
+        self.assertContains(question_page, "101")
+        self.assertEqual(changelist.status_code, 200)
+        self.assertEqual(self.client.get(reverse("admin:games_roundquestion_add")).status_code, 403)
 
     def test_game_status_is_read_only(self):
         game = create_game_with_players(3)

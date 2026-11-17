@@ -3,7 +3,7 @@ from django.contrib import admin
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db.models import Count
 
-from .models import Capital, Game, Player, Round, Territory
+from .models import Capital, Game, Player, Round, RoundAnswer, RoundPlacement, RoundQuestion, Territory
 
 
 class ReadOnlyAdminMixin:
@@ -91,11 +91,48 @@ class PlayerAdmin(admin.ModelAdmin):
         super().delete_model(request, obj)
 
 
+class ReadOnlyInline(admin.TabularInline):
+    extra = 0
+    can_delete = False
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+
+class RoundQuestionInline(ReadOnlyInline):
+    model = RoundQuestion
+    fields = ["sequence", "kind", "text", "first_place", "place_count", "status", "started_at", "deadline"]
+    show_change_link = True
+
+
+class RoundPlacementInline(ReadOnlyInline):
+    model = RoundPlacement
+    fields = ["place", "player", "decided_by"]
+
+
+class RoundAnswerInline(ReadOnlyInline):
+    model = RoundAnswer
+    fields = ["player", "numeric_value", "received_at"]
+
+
 @admin.register(Round)
 class RoundAdmin(ReadOnlyAdminMixin, admin.ModelAdmin):
-    list_display = ["game", "number", "type", "status", "winner", "created_at", "completed_at"]
+    list_display = ["game", "number", "type", "status", "winner", "unresolved_reason", "created_at", "completed_at"]
     list_filter = ["game", "type", "status"]
     list_select_related = ["game", "winner__user"]
+    inlines = [RoundQuestionInline, RoundPlacementInline]
+
+
+@admin.register(RoundQuestion)
+class RoundQuestionAdmin(ReadOnlyAdminMixin, admin.ModelAdmin):
+    list_display = ["round", "sequence", "kind", "text", "status", "deadline"]
+    list_filter = ["game", "kind", "status"]
+    search_fields = ["text"]
+    list_select_related = ["round"]
+    inlines = [RoundAnswerInline]
 
 
 @admin.register(Territory)
