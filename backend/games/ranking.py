@@ -58,3 +58,18 @@ def rank_numeric(answers, correct_answer, group, first_place, place_count):
         return QuestionOutcome(placements=tuple(placements), follow_up=follow_up)
 
     return QuestionOutcome(placements=tuple(placements), unresolved=place <= last_place)
+
+
+def rank_choice(correct_player_ids, group, first_place):
+    """Decide one place from a choice question.
+
+    One correct answer wins. Two or more correct answers go to a numeric question for those players;
+    their speed on this question does not count. No correct answer asks the same group another
+    choice question; a wrong answer is no better than none.
+    """
+    correct = tuple(sorted(correct_player_ids))
+    if len(correct) == 1:
+        return QuestionOutcome(placements=((first_place, correct[0]),))
+    if correct:
+        return QuestionOutcome(follow_up=FollowUp(correct, first_place, 1), follow_up_kind="numeric")
+    return QuestionOutcome(follow_up=FollowUp(tuple(sorted(group)), first_place, 1), follow_up_kind="choice")

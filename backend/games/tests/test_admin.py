@@ -2,7 +2,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.urls import reverse
 
-from games.models import Capital, Game, Player
+from games.models import Capital, Game, Player, Territory
 
 from games import services
 
@@ -10,6 +10,8 @@ from .factories import (
     assign_capitals,
     build_map,
     create_active_game,
+    create_battle_game,
+    create_choice_questions,
     create_game_with_players,
     create_numeric_questions,
     create_user,
@@ -126,6 +128,24 @@ class GamesAdminTests(TestCase):
         self.assertContains(question_page, "101")
         self.assertEqual(changelist.status_code, 200)
         self.assertEqual(self.client.get(reverse("admin:games_roundquestion_add")).status_code, 403)
+
+    def test_battle_pages_show_options_and_choices(self):
+        game, players = create_battle_game(prefix="battle")
+        create_choice_questions(1)
+        target = Territory.objects.get(game=game, slug="zhitno-pole")
+        round_ = services.create_battle(game.pk, players[0].pk, target.pk)
+        services.start_round(round_.pk)
+        question = round_.questions.get()
+        services.submit_answer(round_.pk, players[0].pk, question.options.get(is_correct=True).source_option_id)
+
+        round_page = self.client.get(reverse("admin:games_round_change", args=[round_.pk]))
+        question_page = self.client.get(reverse("admin:games_roundquestion_change", args=[question.pk]))
+        changelist = self.client.get(reverse("admin:games_round_changelist"), {"type__exact": "battle"})
+
+        self.assertContains(round_page, "Житно поле")
+        self.assertContains(question_page, "Въпрос с избор 1?")
+        self.assertEqual(question_page.context["inline_admin_formsets"][0].formset.total_form_count(), 4)
+        self.assertEqual(changelist.context["cl"].result_count, 1)
 
     def test_game_status_is_read_only(self):
         game = create_game_with_players(3)

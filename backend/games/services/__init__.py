@@ -1,3 +1,4 @@
+from .battles import create_battle
 from .capture import capture_territory, get_capture_options
 from .initialization import initialize_game
 from .lobby import add_player, complete_game, create_game, remove_player
@@ -14,6 +15,7 @@ __all__ = [
     "capture_territory",
     "close_question",
     "complete_game",
+    "create_battle",
     "create_city_capture_round",
     "create_game",
     "get_capture_options",

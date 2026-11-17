@@ -1,40 +1,8 @@
-from django.contrib.auth import get_user_model
-from django.core.management import call_command
 from django.core.management.base import BaseCommand
-from django.db import transaction
 from django.utils import timezone
 
-from accounts.models import Profile
 from games import services
-from questions.models import NumericQuestion
-
-DEMO_USERS = ["demo_red", "demo_green", "demo_blue"]
-DEMO_PASSWORD = "demo-pass-2024"
-
-
-def ensure_demo_users():
-    users = []
-    for username in DEMO_USERS:
-        user, created = get_user_model().objects.get_or_create(
-            username=username, defaults={"email": f"{username}@example.com"}
-        )
-        if created:
-            user.set_password(DEMO_PASSWORD)
-            user.save()
-            Profile.objects.create(user=user, nickname=username)
-        users.append(user)
-    return users
-
-
-def create_demo_game():
-    if not NumericQuestion.objects.exists():
-        call_command("loaddata", "questions/question_bank.json", verbosity=0)
-    with transaction.atomic():
-        game = services.create_game()
-        for user in ensure_demo_users():
-            services.add_player(game.pk, user.pk)
-    services.initialize_game(game.pk)
-    return game
+from games.demo import create_demo_game
 
 
 class Command(BaseCommand):

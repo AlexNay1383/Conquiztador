@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 
 from django.test import SimpleTestCase
 
-from games.ranking import FollowUp, NumericAnswer, rank_numeric
+from games.ranking import FollowUp, NumericAnswer, rank_choice, rank_numeric
 
 START = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
 A, B, C = 1, 2, 3
@@ -87,3 +87,22 @@ class NumericRankingTests(SimpleTestCase):
         outcomes = {rank(list(order)) for order in itertools.permutations(answers)}
 
         self.assertEqual(len(outcomes), 1)
+
+
+class ChoiceRankingTests(SimpleTestCase):
+    def test_single_correct_answer_wins(self):
+        outcome = rank_choice([B], group=[A, B], first_place=1)
+
+        self.assertEqual(outcome.placements, ((1, B),))
+        self.assertIsNone(outcome.follow_up)
+
+    def test_two_correct_answers_go_to_a_numeric_question(self):
+        outcome = rank_choice([B, A], group=[A, B], first_place=1)
+
+        self.assertEqual(outcome.placements, ())
+        self.assertEqual((outcome.follow_up, outcome.follow_up_kind), (FollowUp((A, B), 1, 1), "numeric"))
+
+    def test_no_correct_answer_repeats_a_choice_question(self):
+        outcome = rank_choice([], group=[B, A], first_place=1)
+
+        self.assertEqual((outcome.follow_up, outcome.follow_up_kind), (FollowUp((A, B), 1, 1), "choice"))

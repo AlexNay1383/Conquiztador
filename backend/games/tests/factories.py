@@ -8,7 +8,7 @@ from games.map_definition import PROJECT_MAP
 from games.models import Capital, Game, Player, Territory
 from games.services import capture_territory, get_capture_options, initialize_game
 from games.services.capture import pending_capture_rights
-from questions.models import Category, NumericQuestion
+from questions.models import AnswerOption, Category, ChoiceQuestion, NumericQuestion
 
 COLORS = [Player.Color.RED, Player.Color.GREEN, Player.Color.BLUE]
 
@@ -90,3 +90,35 @@ def use_capture_rights(game):
     while (right := pending_capture_rights(game).first()) is not None:
         target = get_capture_options(game.pk, right.player_id)[0]
         capture_territory(game.pk, right.player_id, target.pk)
+
+
+def create_choice_questions(count, first_pk=None):
+    """Choice questions whose options are "A".."D" with "A" correct."""
+    category = Category.objects.get_or_create(name="Тестова")[0]
+    questions = []
+    for index in range(count):
+        pk = None if first_pk is None else first_pk + index
+        question = ChoiceQuestion.objects.create(pk=pk, category=category, text=f"Въпрос с избор {index + 1}?")
+        for letter in "ABCD":
+            AnswerOption.objects.create(question=question, text=letter, is_correct=letter == "A")
+        questions.append(question)
+    return questions
+
+
+BATTLE_OWNERS = {
+    0: ["skali", "dunavia", "sredets", "balkania", "pirina", "ezera"],
+    1: ["kaliakra", "zhitno-pole", "madara", "zlaten-grozd", "pelikania", "tsarevo"],
+    2: ["rozova-dolina", "leventa", "chuden-krai"],
+}
+BATTLE_CAPITALS = ["skali", "kaliakra", "rozova-dolina"]
+
+
+def create_battle_game(prefix="player"):
+    """An active game whose map is fully owned; players[i] owns BATTLE_OWNERS[i], capitals first."""
+    game = create_game_with_players(3, prefix=prefix, status=Game.Status.ACTIVE)
+    territories = build_map(game)
+    assign_capitals(game, territories, BATTLE_CAPITALS)
+    players = list(game.players.order_by("pk"))
+    for index, slugs in BATTLE_OWNERS.items():
+        Territory.objects.filter(game=game, slug__in=slugs).update(owner=players[index])
+    return game, players

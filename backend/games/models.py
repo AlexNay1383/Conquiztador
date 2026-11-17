@@ -125,6 +125,15 @@ class Round(models.Model):
     free_territories_at_creation = models.PositiveSmallIntegerField(
         "свободни територии при създаване", null=True, blank=True
     )
+    attacker = models.ForeignKey(
+        Player, on_delete=models.RESTRICT, null=True, blank=True, related_name="attacks", verbose_name="нападател"
+    )
+    defender = models.ForeignKey(
+        Player, on_delete=models.RESTRICT, null=True, blank=True, related_name="defenses", verbose_name="защитник"
+    )
+    target = models.ForeignKey(
+        "Territory", on_delete=models.RESTRICT, null=True, blank=True, related_name="battles", verbose_name="цел"
+    )
     winner = models.ForeignKey(
         Player,
         on_delete=models.SET_NULL,
@@ -176,6 +185,18 @@ class Round(models.Model):
                 condition=(Q(status="completed") & (Q(winner__isnull=False) | ~Q(unresolved_reason="")))
                 | (~Q(status="completed") & Q(unresolved_reason="")),
                 name="round_without_winner_has_reason",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    Q(type__in=["battle", "capital_attack"])
+                    & Q(attacker__isnull=False, defender__isnull=False, target__isnull=False)
+                    & ~Q(attacker=models.F("defender"))
+                )
+                | (
+                    ~Q(type__in=["battle", "capital_attack"])
+                    & Q(attacker__isnull=True, defender__isnull=True, target__isnull=True)
+                ),
+                name="battle_fields_match_type",
             ),
         ]
 
@@ -297,6 +318,7 @@ class Capital(models.Model):
 
 class QuestionKind(models.TextChoices):
     NUMERIC = "numeric", "Числов"
+    CHOICE = "choice", "С избор"
 
 
 class QuestionStatus(models.TextChoices):
@@ -322,6 +344,14 @@ class RoundQuestion(models.Model):
         blank=True,
         related_name="asked_in",
         verbose_name="числов въпрос",
+    )
+    choice_question = models.ForeignKey(
+        "questions.ChoiceQuestion",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="asked_in",
+        verbose_name="въпрос с избор",
     )
     text = models.TextField("текст")
     correct_answer = models.BigIntegerField("верен отговор", null=True, blank=True)
@@ -353,8 +383,24 @@ class RoundQuestion(models.Model):
             models.CheckConstraint(
                 condition=Q(first_place__gte=1, place_count__gte=1), name="question_places_positive"
             ),
+            models.UniqueConstraint(
+                fields=["game", "choice_question"],
+                condition=Q(choice_question__isnull=False),
+                name="choice_question_once_per_game",
+            ),
             models.CheckConstraint(
-                condition=Q(kind="numeric", numeric_question__isnull=False, correct_answer__isnull=False),
+                condition=Q(
+                    kind="numeric",
+                    numeric_question__isnull=False,
+                    correct_answer__isnull=False,
+                    choice_question__isnull=True,
+                )
+                | Q(
+                    kind="choice",
+                    choice_question__isnull=False,
+                    correct_answer__isnull=True,
+                    numeric_question__isnull=True,
+                ),
                 name="question_kind_matches_source",
             ),
             models.CheckConstraint(
@@ -383,6 +429,14 @@ class RoundAnswer(models.Model):
     )
     player = models.ForeignKey(Player, on_delete=models.RESTRICT, related_name="answers", verbose_name="играч")
     numeric_value = models.BigIntegerField("числов отговор", null=True, blank=True)
+    option = models.ForeignKey(
+        "RoundQuestionOption",
+        on_delete=models.RESTRICT,
+        null=True,
+        blank=True,
+        related_name="answers",
+        verbose_name="избран отговор",
+    )
     received_at = models.DateTimeField("получен")
 
     class Meta:
@@ -391,10 +445,52 @@ class RoundAnswer(models.Model):
         verbose_name_plural = "отговори"
         constraints = [
             models.UniqueConstraint(fields=["question", "player"], name="one_answer_per_player_per_question"),
+            models.CheckConstraint(
+                condition=Q(numeric_value__isnull=False, option__isnull=True)
+                | Q(numeric_value__isnull=True, option__isnull=False),
+                name="answer_has_exactly_one_value",
+            ),
         ]
 
     def __str__(self):
-        return f"{self.player}: {self.numeric_value}"
+        return f"{self.player}: {self.numeric_value if self.option_id is None else self.option}"
+
+    def clean(self):
+        super().clean()
+        if self.option_id is not None and self.option.question_id != self.question_id:
+            raise ValidationError({"option": "Отговорът трябва да е от същия въпрос."})
+
+
+class RoundQuestionOption(models.Model):
+    """Snapshot of one answer option of an asked choice question."""
+
+    question = models.ForeignKey(
+        RoundQuestion, on_delete=models.CASCADE, related_name="options", verbose_name="въпрос"
+    )
+    source_option = models.ForeignKey(
+        "questions.AnswerOption",
+        on_delete=models.PROTECT,
+        related_name="asked_as",
+        verbose_name="отговор от банката",
+    )
+    position = models.PositiveSmallIntegerField("позиция")
+    text = models.CharField("текст", max_length=255)
+    is_correct = models.BooleanField("верен")
+
+    class Meta:
+        ordering = ["question", "position"]
+        verbose_name = "зададен отговор"
+        verbose_name_plural = "зададени отговори"
+        constraints = [
+            models.UniqueConstraint(fields=["question", "position"], name="unique_option_position_per_question"),
+            models.UniqueConstraint(fields=["question", "source_option"], name="unique_source_option_per_question"),
+            models.UniqueConstraint(
+                fields=["question"], condition=Q(is_correct=True), name="one_correct_option_per_asked_question"
+            ),
+        ]
+
+    def __str__(self):
+        return self.text
 
 
 class RoundPlacement(models.Model):
@@ -452,6 +548,13 @@ class CaptureRight(models.Model):
 class ScoreKind(models.TextChoices):
     ROUND_WIN = "round_win", "Победа в рунд"
     CAPTURE = "capture", "Завземане на територия"
+    BATTLE_WIN = "battle_win", "Победа в атака"
+    DEFENSE_WIN = "defense_win", "Успешна защита"
+    CONQUEST = "conquest", "Завладяване на територия"
+
+
+WIN_SCORE_KINDS = [ScoreKind.ROUND_WIN, ScoreKind.BATTLE_WIN, ScoreKind.DEFENSE_WIN]
+TERRITORY_SCORE_KINDS = [ScoreKind.CAPTURE, ScoreKind.CONQUEST]
 
 
 class ScoreEvent(models.Model):
@@ -493,10 +596,12 @@ class ScoreEvent(models.Model):
                 condition=Q(kind__in=ScoreKind.values), name="score_event_kind_valid"
             ),
             models.UniqueConstraint(
-                fields=["round"], condition=Q(kind="round_win"), name="one_win_award_per_round"
+                fields=["round"], condition=Q(kind__in=WIN_SCORE_KINDS), name="one_win_award_per_round"
             ),
             models.UniqueConstraint(
-                fields=["round", "territory"], condition=Q(kind="capture"), name="one_capture_award_per_territory_per_round"
+                fields=["round", "territory"],
+                condition=Q(kind__in=TERRITORY_SCORE_KINDS),
+                name="one_capture_award_per_territory_per_round",
             ),
         ]
 

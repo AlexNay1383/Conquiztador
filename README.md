@@ -408,3 +408,90 @@ Round 4 (3 free, 2 place(s) needed)
 ### Concurrent picks
 
 Picks are serialized by the game row lock. Two simultaneous picks of one free territory end with one success and one `territory_not_free`. Two simultaneous picks with only one right left end with one success and one `no_capture_right`. Both races are covered in `test_capture_concurrency.py`.
+
+## Battles (M08)
+
+### Creating a battle
+
+`create_battle(game_id, attacker_id, target_id, defender_id=None)` creates a `pending` round for the attacker and the target's owner; `start_round`, `submit_answer` and `close_question` then work exactly as in M06.
+
+**Requirements:**
+
+- The game is active, no round is unfinished, and no capture right is pending.
+- The map is fully owned (`map_not_full`).
+- The target is in the same game (`territory_not_in_game`), owned (`target_is_free`), not the attacker's (`target_is_own`), and adjacent to one of the attacker's territories (`target_not_adjacent`). The free-territory exception from M07 does not apply here.
+- The defender is always the target's owner; passing a different `defender_id` is refused (`defender_mismatch`).
+
+**Round type:** an ordinary target gives `battle`; a capital gives `capital_attack`.
+
+**Stored data:** the round keeps `attacker`, `defender` and `target`, and a database check ties them to the battle types. The third player takes no part.
+
+### Questions
+
+The first question is a random unused playable `ChoiceQuestion`. An answer is the id of one of its `AnswerOption`s.
+
+| Correct answers | Next step |
+|---|---|
+| One | Its author wins |
+| Two | New unused `NumericQuestion` for both (choice speed is ignored) |
+| None | New unused `ChoiceQuestion` for both (a wrong answer counts the same as no answer) |
+
+- **Once numeric, always numeric:** after the switch, follow-ups are numeric (closeness, then speed, only first place needed), and a numeric question with no answers repeats for the same pair.
+- **Each step:** every follow-up has its own new 10 seconds and keeps the earlier answers.
+- **Limit:** three questions per round in total, choice questions included. A needed fourth question ends the round without a winner (`question_limit`, which takes precedence); a missing question ends it with `question_bank_exhausted`. A winner decided on the third question stands.
+
+### Consequences
+
+Applied atomically when the round completes, with the M07 scoring system (win 100, capture = territory value after +100):
+
+| Result | Effect |
+|---|---|
+| Attacker wins a `battle` | Target's owner becomes the attacker. Its value rises (`T → T + 100`, strictly greater, never reset). Attacker gets `battle_win` +100 and `conquest` +`(T + 100)` |
+| Defender wins | Owner and territory value unchanged. Defender gets `defense_win` +100 |
+| No winner | Nothing changes, no points |
+| Attacker wins a `capital_attack` | `battle_win` +100 only; the capital's owner, player, territory and health stay as they are |
+
+- **Owner check:** before applying, the target's current owner is compared with the stored defender. If it changed, nothing is applied (`battle_target_changed`). Accepted answers stay, the round stays open, and no other target is awarded.
+- **Once only:** a completed round can't be completed again. Partial unique indexes allow one win award per round and one territory award per territory per round.
+
+### Question representation
+
+`RoundQuestion` has a `kind` and **two separate foreign keys**, `numeric_question` and `choice_question`; a check constraint requires exactly the one that matches the kind.
+
+- **Choice snapshot:** a choice question copies its four options into `RoundQuestionOption` (position, text, `is_correct`, source option).
+- **Answers:** `RoundAnswer` stores either `numeric_value` or `option`, never both (check constraint). The option is one of *this* question's snapshot options.
+- **Rebuilding:** a round's history is `round.questions.order_by("sequence")`. Each row tells its kind, its source, its participants and its answers, so "choice, then numeric" is read directly from the rows. `get_round_state()` returns it with options, correct answers and submitted values.
+- **Same ids:** `ChoiceQuestion` #500 and `NumericQuestion` #500 can both be asked in one round. One row has `choice_question_id=500`, the other `numeric_question_id=500`, and the per-kind unique indexes `(game, numeric_question)` and `(game, choice_question)` forbid repeats only within each model. `test_equal_ids_in_both_bank_models_stay_distinct` covers this.
+- **Foreign options:** an answer is looked up among the active question's snapshot options by `source_option`. An `AnswerOption` id from another question finds nothing and is refused (`invalid_option`), even though that option exists in the bank.
+- **Bank edits:** changing or deleting options in the bank later does not change what was asked or how it is judged; asked options are `PROTECT`ed.
+
+**Rejected alternative:** one generic link (`ContentType` + `object_id`, or a bare `question_id` plus `kind`). The database could no longer enforce foreign keys, `PROTECT` or the per-model "asked once" uniqueness, and a mistake in `kind` would silently turn the same number into a different question.
+
+### Example
+
+`python backend/manage.py demo_battle --seed 3` conquers the map with the demo players, then plays a battle where both players answer the choice question correctly:
+
+```text
+Round 5 (battle): demo_red attacks balkania (value 100) owned by demo_green
+  Q1 choice: Кой рисува „Мона Лиза“? -> correct: Леонардо да Винчи
+    demo_green chose Леонардо да Винчи
+    demo_red chose Леонардо да Винчи
+  Q2 numeric: През коя година е представен първият iPhone? -> correct: 2007
+    demo_red answered 2009
+    demo_green answered 2000
+  winner: demo_red; balkania now belongs to demo_red, value 200
+  demo_red победа в атака: 500 -> 600 (победа = 100)
+  demo_red завладяване на територия balkania: 600 -> 800 (… = 100 + 100 = 200)
+  stored history:
+    #1 choice: answers [39, 39]
+    #2 numeric: answers [2009, 2000]
+```
+
+### Concurrent follow-ups
+
+Closing a question and creating the next one happen in one transaction under the game row lock, and `(round, sequence)` is unique.
+
+- **Tying answer vs. explicit close:** if the second correct answer and a `close_question` call arrive together, exactly one numeric follow-up is created. The other call sees the new question still open and is refused.
+- **Two simultaneous correct answers:** they produce the history `choice, numeric` exactly once.
+
+Both cases are in `test_battle_concurrency.py`.

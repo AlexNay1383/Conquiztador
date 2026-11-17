@@ -71,7 +71,7 @@ class RoundWinnerTests(TestCase):
         round_ = Round(
             game=game,
             number=1,
-            type=Round.Type.BATTLE,
+            type=Round.Type.BONUS,
             status=Round.Status.COMPLETED,
             winner=stranger,
             started_at=timezone.now(),
@@ -90,7 +90,7 @@ class CurrentRoundTests(TestCase):
         winner = game.players.first()
         now = timezone.now()
         done = dict(status="completed", winner=winner, started_at=now, completed_at=now)
-        Round.objects.create(game=game, number=2, type=Round.Type.BATTLE, **done)
+        Round.objects.create(game=game, number=2, type=Round.Type.BONUS, **done)
         latest = Round.objects.create(game=game, number=3, type=Round.Type.BONUS)
         Round.objects.create(game=game, number=1, type=Round.Type.CITY_CAPTURE, **done)
 
@@ -115,13 +115,13 @@ class RoundConstraintTests(TestCase):
     def test_number_is_unique_per_game(self):
         Round.objects.create(game=self.game, number=1, type=Round.Type.CITY_CAPTURE)
 
-        self.assert_rejected(number=1, type=Round.Type.BATTLE)
+        self.assert_rejected(number=1, type=Round.Type.BONUS)
 
     def test_at_most_one_unfinished_round(self):
         Round.objects.create(game=self.game, number=1, type=Round.Type.CITY_CAPTURE)
 
-        self.assert_rejected(number=2, type=Round.Type.BATTLE)
-        self.assert_rejected(number=2, type=Round.Type.BATTLE, status="active", started_at=self.now)
+        self.assert_rejected(number=2, type=Round.Type.BONUS)
+        self.assert_rejected(number=2, type=Round.Type.BONUS, status="active", started_at=self.now)
 
     def test_lifecycle_fields_match_status(self):
         cases = [
@@ -134,17 +134,17 @@ class RoundConstraintTests(TestCase):
         ]
         for fields in cases:
             with self.subTest(**{key: str(value) for key, value in fields.items()}):
-                self.assert_rejected(number=1, type=Round.Type.BATTLE, **fields)
+                self.assert_rejected(number=1, type=Round.Type.BONUS, **fields)
 
     def test_completed_round_without_winner_needs_a_reason(self):
         completed = dict(status="completed", started_at=self.now, completed_at=self.now)
-        self.assert_rejected(number=1, type=Round.Type.BATTLE, **completed)
+        self.assert_rejected(number=1, type=Round.Type.BONUS, **completed)
 
         Round.objects.create(
-            game=self.game, number=1, type=Round.Type.BATTLE, unresolved_reason="question_limit", **completed
+            game=self.game, number=1, type=Round.Type.BONUS, unresolved_reason="question_limit", **completed
         )
 
     def test_unknown_choices_are_rejected(self):
         self.assert_rejected(number=1, type="duel")
-        self.assert_rejected(number=1, type=Round.Type.BATTLE, status="paused")
-        self.assert_rejected(number=1, type=Round.Type.BATTLE, unresolved_reason="bored")
+        self.assert_rejected(number=1, type=Round.Type.BONUS, status="paused")
+        self.assert_rejected(number=1, type=Round.Type.BONUS, unresolved_reason="bored")

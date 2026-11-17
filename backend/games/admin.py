@@ -12,6 +12,7 @@ from .models import (
     RoundAnswer,
     RoundPlacement,
     RoundQuestion,
+    RoundQuestionOption,
     ScoreEvent,
     Territory,
 )
@@ -131,14 +132,30 @@ class CaptureRightInline(ReadOnlyInline):
 
 class RoundAnswerInline(ReadOnlyInline):
     model = RoundAnswer
-    fields = ["player", "numeric_value", "received_at"]
+    fields = ["player", "numeric_value", "option", "received_at"]
+
+
+class RoundQuestionOptionInline(ReadOnlyInline):
+    model = RoundQuestionOption
+    fields = ["position", "text", "is_correct", "source_option"]
 
 
 @admin.register(Round)
 class RoundAdmin(ReadOnlyAdminMixin, admin.ModelAdmin):
-    list_display = ["game", "number", "type", "status", "winner", "unresolved_reason", "created_at", "completed_at"]
+    list_display = [
+        "game",
+        "number",
+        "type",
+        "status",
+        "attacker",
+        "target",
+        "winner",
+        "unresolved_reason",
+        "created_at",
+        "completed_at",
+    ]
     list_filter = ["game", "type", "status"]
-    list_select_related = ["game", "winner__user"]
+    list_select_related = ["game", "winner__user", "attacker__user", "target"]
     inlines = [RoundQuestionInline, RoundPlacementInline, CaptureRightInline]
 
 
@@ -148,7 +165,7 @@ class RoundQuestionAdmin(ReadOnlyAdminMixin, admin.ModelAdmin):
     list_filter = ["game", "kind", "status"]
     search_fields = ["text"]
     list_select_related = ["round"]
-    inlines = [RoundAnswerInline]
+    inlines = [RoundQuestionOptionInline, RoundAnswerInline]
 
 
 @admin.register(Territory)
