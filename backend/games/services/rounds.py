@@ -11,11 +11,12 @@ from games.models import Player, Round, RoundAnswer, RoundPlacement, RoundQuesti
 from games.ranking import NumericAnswer, rank_numeric
 from questions.models import NumericQuestion
 
+from .capture import require_no_pending_rights
 from .common import get_game_id_for_round, lock_game, require_active
+from .scoring import apply_round_result, capture_picks, free_territories
 
 ANSWER_WINDOW = timedelta(seconds=10)
 MAX_QUESTIONS_PER_ROUND = 3
-CITY_CAPTURE_PLACES = 2
 INTEGER_PATTERN = re.compile(r"[+-]?\d+")
 MAX_ANSWER_MAGNITUDE = 2**63 - 1
 
@@ -64,24 +65,34 @@ def activate_question(question, now):
 
 @transaction.atomic
 def create_city_capture_round(game_id, rng=None):
-    """Create a pending round for all three players with its first numeric question, without starting the clock."""
+    """Create a pending round for all three players with its first numeric question, without starting the clock.
+
+    The number of free territories is frozen now; it decides how many places the round needs and,
+    after it ends, how many territories each ranked player may pick.
+    """
     rng = rng or random.Random()
     game = lock_game(game_id)
     require_active(game)
     require_no_open_round(game)
+    require_no_pending_rights(game)
+    free_count = free_territories(game).count()
+    if free_count == 0:
+        raise InvalidStateError("Всички територии вече са завзети.", "no_free_territories")
     source = pick_numeric_question(game, rng)
     if source is None:
         raise InvalidStateError("Няма неизползван числов въпрос.", "no_question_available")
 
+    places_needed = 2 if capture_picks(free_count, 2) else 1
     player_ids = list(game.players.order_by("pk").values_list("pk", flat=True))
     round_ = Round.objects.create(
         game=game,
         number=next_round_number(game),
         type=Round.Type.CITY_CAPTURE,
-        places_needed=CITY_CAPTURE_PLACES,
+        places_needed=places_needed,
+        free_territories_at_creation=free_count,
     )
     round_.participants.set(player_ids)
-    add_numeric_question(round_, 1, source, player_ids, first_place=1, place_count=CITY_CAPTURE_PLACES)
+    add_numeric_question(round_, 1, source, player_ids, first_place=1, place_count=places_needed)
     return round_
 
 
@@ -217,6 +228,7 @@ def finish_round(round_, now, reason):
     round_.status = Round.Status.COMPLETED
     round_.completed_at = now
     round_.save(update_fields=["winner", "unresolved_reason", "status", "completed_at"])
+    apply_round_result(round_)
 
 
 def get_round_state(round_id, now=None):

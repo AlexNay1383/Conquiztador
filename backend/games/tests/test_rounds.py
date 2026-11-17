@@ -7,7 +7,7 @@ from games import services
 from games.exceptions import InvalidStateError
 from games.models import Game, Round
 
-from .factories import create_active_game, create_game_with_players, create_numeric_questions
+from .factories import create_active_game, create_game_with_players, create_numeric_questions, use_capture_rights
 
 
 class RoundLifecycleTests(TestCase):
@@ -32,6 +32,7 @@ class RoundLifecycleTests(TestCase):
     def test_next_round_gets_the_next_number(self):
         first = services.create_city_capture_round(self.game.pk)
         self.finish(first)
+        use_capture_rights(self.game)
 
         second = services.create_city_capture_round(self.game.pk)
 

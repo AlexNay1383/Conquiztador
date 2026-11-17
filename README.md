@@ -317,3 +317,94 @@ Each run creates a new game for the users `demo_red`, `demo_green` and `demo_blu
 ### Concurrent answers
 
 Two simultaneous answers from one player are serialized by the game row lock. The second sees the first and is refused with `already_answered`. The unique index on `(question, player)` is a database-level backstop. `test_round_concurrency.py` checks this on real threads, plus the case where the last two answers arrive together and close the question exactly once.
+
+## Territory capture and scoring (M07)
+
+### Capture rights
+
+When a `city_capture` round completes, the same transaction awards the win and creates `CaptureRight` rows (round, player, order, allowed, used). The number of free territories `F` is frozen on the round when it is created, and it also decides the places the round needs.
+
+| Free territories `F` | Places needed | First may pick | Second may pick |
+|---|---|---|---|
+| 3 or more | 2 | 2 | 1 |
+| 2 | 1 | 2 | — |
+| 1 | 1 | 1 | — |
+
+- With no winner there are no rights.
+- If second place stays unresolved, first keeps both picks, and leftover territories wait for the next round.
+- Rights are created once, together with completion. A completed round can't be completed again, and unique indexes on `(round, order)` and `(round, player)` back this up.
+
+### Picking (`capture_territory(game_id, player_id, territory_id)`)
+
+One atomic operation under the game lock. It requires an active game, and the player must hold the first unused right; the other cases are refused with `not_your_turn` or `no_capture_right`. The target must be free (`territory_not_free`), in the same game (`territory_not_in_game`) and adjacent to a territory the player owns, the capital included (`territory_not_adjacent`).
+
+- **Exception:** if the player has no free neighbour at all, any free territory may be picked.
+- **Recomputed after every pick:** the winner's second pick may border the territory just taken, and second place picks from what is left.
+- `get_capture_options(game_id, player_id)` lists the currently allowed targets.
+
+In one transaction the pick sets the owner, raises `Territory.score`, awards the capture points and uses one right. A refused or failed pick changes nothing and doesn't use a right.
+
+### Phase
+
+- **Blocked:** a new `city_capture` waits while any round is unfinished or any right is unused (`capture_rights_pending`).
+- **Refused:** once no territory is free (`no_free_territories`). A full map does not end the game.
+- **No winner:** the round distributes nothing.
+- **No question:** a missing question blocks creation without changes, and the creation can be retried once the bank grows.
+
+### Scoring
+
+| | System A — flat | System B — territory value (**chosen**) |
+|---|---|---|
+| Round win | +150 | +100 |
+| Territory score on capture | +100 | +100 (`T → T + 100`) |
+| Capture points | always +100 | the territory's value **after** the increase, `T + 100` |
+
+Both systems applied to the first two rounds of the demo run below:
+
+| Event | A: green / blue / red | B: green / blue / red |
+|---|---|---|
+| Round 1 won by green | 150 / 0 / 0 | 100 / 0 / 0 |
+| green takes 2, blue takes 1 | 350 / 100 / 0 | 300 / 100 / 0 |
+| Round 2 won by blue | 350 / 250 / 0 | 300 / 200 / 0 |
+| blue takes 2, red takes 1 | 350 / 450 / 100 | 300 / 400 / 100 |
+| *(M08)* blue later conquers a territory worth 100 | +150 win +100 = +250 | +100 win +200 = +300 |
+
+**Why B:**
+- **First vs. second:** first earns the win bonus plus up to two captures (up to 300). Second earns only its single capture (100); third earns nothing.
+- **Value of a capture:** in A every capture is worth the same. In B a territory's points grow each time it changes hands (100, 200, 300, …), so contested land is worth more.
+- **No extra pay for tie-breaks:** follow-up questions pay nothing; the win is paid once per round and each capture once per territory per round, both enforced by partial unique indexes on `ScoreEvent`.
+- Scores only grow, and other players' scores are never reduced.
+
+Every change of `Player.score` is a `ScoreEvent` row. It records:
+
+- player, round and territory;
+- points;
+- player score before and after (a check constraint enforces `after = before + points`);
+- territory score before and after;
+- the formula used.
+
+### Example with local records
+
+`python backend/manage.py demo_conquest --seed 7` plays rounds until the map is full and prints every `ScoreEvent`. An excerpt from a real run:
+
+```text
+Round 1 (12 free, 2 place(s) needed)
+  questions: 1, ranking: 1. demo_green, 2. demo_blue
+  demo_green победа в рунд: 0 -> 100 (победа = 100)
+  demo_green завземане на територия zlaten-grozd: 100 -> 200 (… = 0 + 100 = 100)
+  demo_green завземане на територия pelikania: 200 -> 300 (… = 0 + 100 = 100)
+  demo_blue завземане на територия kaliakra: 0 -> 100 (… = 0 + 100 = 100)
+Round 2 (9 free, 2 place(s) needed)
+  questions: 1, ranking: 1. demo_blue, 2. demo_red
+  demo_blue победа в рунд: 100 -> 200 (победа = 100)
+  demo_blue завземане на територия zhitno-pole: 200 -> 300 (… = 0 + 100 = 100)
+  demo_blue завземане на територия dunavia: 300 -> 400 (… = 0 + 100 = 100)
+  demo_red завземане на територия sredets: 0 -> 100 (… = 0 + 100 = 100)
+...
+Round 4 (3 free, 2 place(s) needed)
+  demo_blue завземане на територия pirina: 500 -> 600 (… = 0 + 100 = 100)   # no free neighbour: exception applied
+```
+
+### Concurrent picks
+
+Picks are serialized by the game row lock. Two simultaneous picks of one free territory end with one success and one `territory_not_free`. Two simultaneous picks with only one right left end with one success and one `no_capture_right`. Both races are covered in `test_capture_concurrency.py`.

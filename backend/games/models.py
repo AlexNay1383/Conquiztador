@@ -122,6 +122,9 @@ class Round(models.Model):
     status = models.CharField("статус", max_length=16, choices=RoundStatus.choices, default=RoundStatus.PENDING)
     participants = models.ManyToManyField(Player, related_name="rounds", verbose_name="участници")
     places_needed = models.PositiveSmallIntegerField("необходими места", default=1)
+    free_territories_at_creation = models.PositiveSmallIntegerField(
+        "свободни територии при създаване", null=True, blank=True
+    )
     winner = models.ForeignKey(
         Player,
         on_delete=models.SET_NULL,
@@ -414,3 +417,88 @@ class RoundPlacement(models.Model):
 
     def __str__(self):
         return f"{self.place}. {self.player}"
+
+
+class CaptureRight(models.Model):
+    """How many free territories a ranked player of a city-capture round may still pick, and in which order."""
+
+    round = models.ForeignKey(Round, on_delete=models.CASCADE, related_name="capture_rights", verbose_name="рунд")
+    player = models.ForeignKey(
+        Player, on_delete=models.RESTRICT, related_name="capture_rights", verbose_name="играч"
+    )
+    order = models.PositiveSmallIntegerField("ред")
+    allowed = models.PositiveSmallIntegerField("разрешени избори")
+    used = models.PositiveSmallIntegerField("използвани избори", default=0)
+
+    class Meta:
+        ordering = ["round", "order"]
+        verbose_name = "право за избор"
+        verbose_name_plural = "права за избор"
+        constraints = [
+            models.UniqueConstraint(fields=["round", "order"], name="unique_capture_order_per_round"),
+            models.UniqueConstraint(fields=["round", "player"], name="one_capture_right_per_player_per_round"),
+            models.CheckConstraint(condition=Q(allowed__gte=1), name="capture_right_allowed_gte_1"),
+            models.CheckConstraint(condition=Q(used__lte=models.F("allowed")), name="capture_right_used_lte_allowed"),
+        ]
+
+    def __str__(self):
+        return f"{self.player}: {self.used}/{self.allowed}"
+
+    @property
+    def remaining(self):
+        return self.allowed - self.used
+
+
+class ScoreKind(models.TextChoices):
+    ROUND_WIN = "round_win", "Победа в рунд"
+    CAPTURE = "capture", "Завземане на територия"
+
+
+class ScoreEvent(models.Model):
+    """One change of a player's score, with the values before and after and the formula that produced it."""
+
+    Kind = ScoreKind
+
+    game = models.ForeignKey(Game, on_delete=models.CASCADE, related_name="score_events", verbose_name="игра")
+    player = models.ForeignKey(Player, on_delete=models.RESTRICT, related_name="score_events", verbose_name="играч")
+    round = models.ForeignKey(Round, on_delete=models.CASCADE, related_name="score_events", verbose_name="рунд")
+    territory = models.ForeignKey(
+        Territory,
+        on_delete=models.RESTRICT,
+        null=True,
+        blank=True,
+        related_name="score_events",
+        verbose_name="територия",
+    )
+    kind = models.CharField("вид", max_length=16, choices=ScoreKind.choices)
+    points = models.PositiveIntegerField("точки")
+    score_before = models.PositiveIntegerField("точки преди")
+    score_after = models.PositiveIntegerField("точки след")
+    territory_score_before = models.PositiveIntegerField("точки на територията преди", null=True, blank=True)
+    territory_score_after = models.PositiveIntegerField("точки на територията след", null=True, blank=True)
+    formula = models.CharField("изчисление", max_length=200)
+    created_at = models.DateTimeField("създадено", auto_now_add=True)
+
+    class Meta:
+        ordering = ["game", "created_at", "id"]
+        verbose_name = "точкуване"
+        verbose_name_plural = "точкувания"
+        constraints = [
+            models.CheckConstraint(condition=Q(points__gt=0), name="score_event_points_positive"),
+            models.CheckConstraint(
+                condition=Q(score_after=models.F("score_before") + models.F("points")),
+                name="score_event_after_is_before_plus_points",
+            ),
+            models.CheckConstraint(
+                condition=Q(kind__in=ScoreKind.values), name="score_event_kind_valid"
+            ),
+            models.UniqueConstraint(
+                fields=["round"], condition=Q(kind="round_win"), name="one_win_award_per_round"
+            ),
+            models.UniqueConstraint(
+                fields=["round", "territory"], condition=Q(kind="capture"), name="one_capture_award_per_territory_per_round"
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.player}: +{self.points} ({self.get_kind_display()})"

@@ -8,7 +8,7 @@ from games.exceptions import InvalidInputError, InvalidStateError, NotFoundError
 from games.models import Game, Round, RoundAnswer, RoundQuestion
 from questions.models import NumericQuestion
 
-from .factories import create_active_game, create_numeric_questions, use_fake_clock
+from .factories import create_active_game, create_numeric_questions, use_capture_rights, use_fake_clock
 
 TEN_SECONDS = timedelta(seconds=10)
 
@@ -88,6 +88,7 @@ class WorkflowTests(RoundFlowTestCase):
             asked.append(self.current(round_).numeric_question_id)
             for player_id in (self.a, self.b, self.c):
                 self.answer(round_, player_id, offset=player_id, after=0.1)
+            use_capture_rights(self.game)
 
         self.assertEqual(len(set(asked)), 2)
         self.assert_refused(InvalidStateError, "no_question_available", services.create_city_capture_round, self.game.pk)

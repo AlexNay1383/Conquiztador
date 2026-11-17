@@ -6,7 +6,8 @@ from django.contrib.auth import get_user_model
 
 from games.map_definition import PROJECT_MAP
 from games.models import Capital, Game, Player, Territory
-from games.services import initialize_game
+from games.services import capture_territory, get_capture_options, initialize_game
+from games.services.capture import pending_capture_rights
 from questions.models import Category, NumericQuestion
 
 COLORS = [Player.Color.RED, Player.Color.GREEN, Player.Color.BLUE]
@@ -82,3 +83,10 @@ def use_fake_clock(test_case):
     patcher.start()
     test_case.addCleanup(patcher.stop)
     return fake
+
+
+def use_capture_rights(game):
+    """Spend every pending capture right on the first territory each player may pick."""
+    while (right := pending_capture_rights(game).first()) is not None:
+        target = get_capture_options(game.pk, right.player_id)[0]
+        capture_territory(game.pk, right.player_id, target.pk)

@@ -3,7 +3,18 @@ from django.contrib import admin
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db.models import Count
 
-from .models import Capital, Game, Player, Round, RoundAnswer, RoundPlacement, RoundQuestion, Territory
+from .models import (
+    Capital,
+    CaptureRight,
+    Game,
+    Player,
+    Round,
+    RoundAnswer,
+    RoundPlacement,
+    RoundQuestion,
+    ScoreEvent,
+    Territory,
+)
 
 
 class ReadOnlyAdminMixin:
@@ -113,6 +124,11 @@ class RoundPlacementInline(ReadOnlyInline):
     fields = ["place", "player", "decided_by"]
 
 
+class CaptureRightInline(ReadOnlyInline):
+    model = CaptureRight
+    fields = ["order", "player", "allowed", "used"]
+
+
 class RoundAnswerInline(ReadOnlyInline):
     model = RoundAnswer
     fields = ["player", "numeric_value", "received_at"]
@@ -123,7 +139,7 @@ class RoundAdmin(ReadOnlyAdminMixin, admin.ModelAdmin):
     list_display = ["game", "number", "type", "status", "winner", "unresolved_reason", "created_at", "completed_at"]
     list_filter = ["game", "type", "status"]
     list_select_related = ["game", "winner__user"]
-    inlines = [RoundQuestionInline, RoundPlacementInline]
+    inlines = [RoundQuestionInline, RoundPlacementInline, CaptureRightInline]
 
 
 @admin.register(RoundQuestion)
@@ -157,3 +173,11 @@ class CapitalAdmin(ReadOnlyAdminMixin, admin.ModelAdmin):
     list_filter = ["territory__game"]
     search_fields = ["player__user__username", "player__user__profile__nickname", "territory__name", "territory__slug"]
     list_select_related = ["territory", "player__user"]
+
+
+@admin.register(ScoreEvent)
+class ScoreEventAdmin(ReadOnlyAdminMixin, admin.ModelAdmin):
+    list_display = ["created_at", "player", "kind", "points", "score_before", "score_after", "territory", "formula"]
+    list_filter = ["game", "kind"]
+    search_fields = ["player__user__username", "territory__name"]
+    list_select_related = ["player__user", "territory"]
