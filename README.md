@@ -73,3 +73,19 @@ Session authentication with CSRF protection. All errors share one shape: `{"erro
 - `PATCH /api/auth/me/` rejects any field other than `nickname` and `avatar_key` with `400`.
 
 The UI has registration, login and profile screens; the profile route is protected and the session survives a page refresh.
+
+## Question bank (M02)
+
+The `questions` app holds `Category`, the abstract `BaseQuestion` and its two concrete models `ChoiceQuestion` (with four `AnswerOption`s, exactly one correct) and `NumericQuestion` (integer `correct_answer`). Categories with questions are protected from deletion; deleting a choice question deletes its options.
+
+Load the initial bank (6 categories, 12 choice questions with 48 options, 12 numeric questions, in Bulgarian):
+
+```bash
+python backend/manage.py loaddata questions/question_bank.json
+```
+
+The "four options, one correct" rule spans several rows, so it is enforced in application code rather than by the database:
+
+- `ChoiceQuestion.clean()` validates the saved options.
+- The admin inline accepts exactly four options and requires exactly one to be correct.
+- `ChoiceQuestion.objects.playable()` returns only questions that satisfy the rule; gameplay draws questions only from it.
