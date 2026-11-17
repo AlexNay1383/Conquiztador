@@ -23,10 +23,12 @@ class GameCreationTests(TestCase):
 
 
 class StartGameTests(TestCase):
+    """Activation happens only through initialization; see test_initialization for the map details."""
+
     def test_game_starts_with_exactly_three_players(self):
         game = create_game_with_players(3)
 
-        services.start_game(game.pk)
+        services.initialize_game(game.pk)
 
         game.refresh_from_db()
         self.assertEqual(game.status, Game.Status.ACTIVE)
@@ -36,7 +38,7 @@ class StartGameTests(TestCase):
         game = create_game_with_players(2)
 
         with self.assertRaises(InvalidStateError) as context:
-            services.start_game(game.pk)
+            services.initialize_game(game.pk)
 
         self.assertEqual(context.exception.code, "wrong_player_count")
         game.refresh_from_db()
@@ -44,16 +46,16 @@ class StartGameTests(TestCase):
 
     def test_game_starts_only_once(self):
         game = create_game_with_players(3)
-        services.start_game(game.pk)
+        services.initialize_game(game.pk)
 
         with self.assertRaises(InvalidStateError) as context:
-            services.start_game(game.pk)
+            services.initialize_game(game.pk)
 
         self.assertEqual(context.exception.code, "game_not_waiting")
 
     def test_missing_game(self):
         with self.assertRaises(NotFoundError):
-            services.start_game(999_999)
+            services.initialize_game(999_999)
 
 
 class CompleteGameTests(TestCase):

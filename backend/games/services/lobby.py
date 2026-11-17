@@ -47,17 +47,6 @@ def remove_player(player_id):
 
 
 @transaction.atomic
-def start_game(game_id):
-    game = lock_game(game_id)
-    require_waiting(game)
-    if game.players.count() != Game.PLAYER_COUNT:
-        raise InvalidStateError("Играта започва само с точно трима играчи.", "wrong_player_count")
-    game.status = Game.Status.ACTIVE
-    game.save(update_fields=["status"])
-    return game
-
-
-@transaction.atomic
 def complete_game(game_id):
     game = lock_game(game_id)
     require_active(game)

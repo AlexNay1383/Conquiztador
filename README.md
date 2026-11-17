@@ -194,3 +194,54 @@ One valid capital triple is `skali`, `kaliakra`, `rozova-dolina`: no two of them
   - Deleting a capital's territory is refused.
   - Health 0 marks a destroyed capital but keeps the record, owner and player.
 - **Admin:** territories (game, name, slug, owner, score, neighbours; search by name/slug; filter by game/owner) and capitals (player, territory, health; search by player/territory; filter by game) are view-only. Adding, editing and deleting are disabled, so score and health aren't editable either.
+
+## Game initialization (M05)
+
+### Interface
+
+```bash
+python backend/manage.py start_game <game_id>
+```
+
+From code: `games.services.initialize_game(game_id)`. It returns the active `Game`, or raises a `GameError` subclass whose `code` names the reason (the command prints `[code] message`):
+
+| Exception | `code` | Reason |
+|---|---|---|
+| `NotFoundError` | `game_not_found` | No such game |
+| `InvalidStateError` | `game_not_waiting` | Already started or completed (also the second of two concurrent starts) |
+| `InvalidStateError` | `wrong_player_count` / `invalid_players` | Not exactly three valid players |
+| `InvalidStateError` | `map_already_exists` | The game already has territories or capitals (a partial map is neither completed nor deleted) |
+| `InvalidStateError` | `invalid_map_definition` | The definition breaks an M04 rule, including "no valid capital triple" |
+
+Creating a game or adding the third player never starts it automatically.
+
+### What happens in one attempt
+
+One `transaction.atomic()` block:
+
+1. Lock the game row and its player rows (`SELECT … FOR UPDATE`).
+2. Check the preconditions above.
+3. Bulk-create the 15 territories, then both directions of every edge.
+4. Choose the capitals (see below) and set their owners.
+5. Create three `Capital`s with health 3.
+6. Set the status to `active`.
+7. Run full map validation.
+
+Any error, whether a refusal, a database error or failed validation, rolls back everything from the attempt, leaving the previous state intact; a later attempt may succeed. A successful start is never repeated: the second call gets `game_not_waiting`. Rounds, players and other games are never touched.
+
+### Capital selection
+
+All mutually non-adjacent triples are enumerated from the definition (189 for the project map). One is drawn with `random.Random().choice`, and the three players are assigned in `random.sample` order. Every valid assignment is reachable, and the draw can't fail or retry, because only valid triples are candidates. No seed is needed; tests inject their own `rng`.
+
+### Concurrency and composition
+
+- Every state-changing operation on a game takes the game's row lock first: `initialize_game`, `add_player`, `remove_player`, the round services, and the admin player form, whose changes are saved inside the same lock.
+- Two simultaneous starts therefore run one after the other, and the second sees `active`.
+- Joining or leaving runs either entirely before the start or after it, and after it the request is refused.
+- After activation, admin shows players read-only and refuses deletion.
+- Database backstops: unique `(game, slug)` blocks a second map. Foreign keys are deferred until commit, so deleting a player who owns territories fails even under a race.
+- `test_initialization_concurrency.py` runs these races on real threads with separate connections.
+
+### Database
+
+PostgreSQL 17 (`backend/compose.yaml`) at the default `READ COMMITTED` isolation level. The guarantees rely on its row-level `SELECT … FOR UPDATE` locks, transactional rollback of bulk inserts, and deferred foreign-key checks. SQLite is not supported: it ignores `select_for_update`, and its database-wide write lock would turn these races into "database is locked" errors instead of the documented refusals.
