@@ -127,3 +127,70 @@ except InvalidInputError as error:
 - **Database constraints:** unique user and unique color per game; non-negative score; valid choice values; unique round number per game; at most one `active` round per game; `completed_at` set exactly when a round is `completed`; no winner before completion.
 - **Application rules:** the winner belongs to the same game; at most three players; changes only while `waiting`.
 - **Admin:** shows game status and rounds read-only, because lifecycle changes go through services. Players can be added, edited or removed only while their game is `waiting`.
+
+## Territories and map (M04)
+
+### Map
+
+All games use one map with 15 territories and 25 undirected edges, defined in `backend/games/map_definition.py`:
+
+```text
+skali ------- dunavia ---- zhitno-pole --- madara -------- kaliakra
+  |       \      |              |             |      \         |
+sredets ---- balkania ------ leventa ----- pelikania --- zlaten-grozd
+  |              |              |      \      |                |
+pirina ------- ezera ----- rozova-dolina -- chuden-krai ---- tsarevo
+```
+
+| Slug | Name | Neighbours |
+|---|---|---|
+| `skali` | Скали | `balkania`, `dunavia`, `sredets` |
+| `dunavia` | Дунавия | `balkania`, `skali`, `zhitno-pole` |
+| `zhitno-pole` | Житно поле | `dunavia`, `leventa`, `madara` |
+| `madara` | Мадара | `kaliakra`, `pelikania`, `zhitno-pole`, `zlaten-grozd` |
+| `kaliakra` | Калиакра | `madara`, `zlaten-grozd` |
+| `sredets` | Средец | `balkania`, `pirina`, `skali` |
+| `balkania` | Балкания | `dunavia`, `ezera`, `leventa`, `skali`, `sredets` |
+| `leventa` | Левента | `balkania`, `chuden-krai`, `pelikania`, `rozova-dolina`, `zhitno-pole` |
+| `pelikania` | Пеликания | `chuden-krai`, `leventa`, `madara`, `zlaten-grozd` |
+| `zlaten-grozd` | Златен грозд | `kaliakra`, `madara`, `pelikania`, `tsarevo` |
+| `pirina` | Пирина | `ezera`, `sredets` |
+| `ezera` | Езера | `balkania`, `pirina`, `rozova-dolina` |
+| `rozova-dolina` | Розова долина | `chuden-krai`, `ezera`, `leventa` |
+| `chuden-krai` | Чуден край | `leventa`, `pelikania`, `rozova-dolina`, `tsarevo` |
+| `tsarevo` | Царево | `chuden-krai`, `zlaten-grozd` |
+
+One valid capital triple is `skali`, `kaliakra`, `rozova-dolina`: no two of them share an edge. The map has 189 such triples.
+
+### Representation
+
+- **Definition:** a frozen `MapDefinition`: a tuple of `TerritoryDefinition(slug, name)` and a tuple of edges, each logical edge listed once as a pair of slugs. It is plain Python data, not database rows, so it can't be changed at runtime and needs no fixture.
+- **Per-game records:** each game gets its own records. `Territory` (game, name, slug, owner, score) has a symmetric self-referencing `neighbors` many-to-many. Django stores both directions of every edge in the through table, and validation treats them as one logical edge. `Capital` (territory, player, health 0–3) reaches its game through the territory and has no separate game field.
+- **Validation (`games/maps.py`):**
+  - `check_definition()` / `validate_definition()` check a definition.
+  - `check_game_map()` / `validate_game_map()` compare a game's records with the definition: names, slugs, every logical edge, symmetry, no cross-game links, owners and capitals.
+  - The `check_*` functions return a list of problems; the `validate_*` functions raise `MapValidationError`. None of them writes to the database. An empty map of a `waiting` game is a valid game state, but `check_game_map()` reports it as incomplete.
+- **Access:** `get_game_territories(game)`, `get_player_territories(player)` and `get_player_capital(player)`. The last returns `None` when the player has no capital and never creates one.
+
+### Integrity
+
+- **Normalization:** names are trimmed and internal whitespace collapsed to single spaces, then compared case-insensitively. Slugs are trimmed, lower-cased and must match `^[a-z0-9]+(-[a-z0-9]+)*$`. The definition must already be in normalized form. `Territory.full_clean()` normalizes before validating.
+- **Database constraints:**
+  - unique `(game, slug)` and unique `(game, lower(name))`;
+  - slug and name format checks;
+  - `score >= 0`;
+  - capital `health` between 0 and 3;
+  - one capital per territory and one per player (one-to-one fields).
+- **Application rules:**
+  - The owner belongs to the territory's game.
+  - A territory can't move to another game.
+  - A capital's territory is owned by the capital's player, and both are in one game; its owner can't change.
+  - The `m2m_changed` guard refuses self-links and cross-game neighbour links.
+  - Full-map validation covers everything above.
+- **Entry points:** territories, edges and capitals are created only by game initialization (M05). Gameplay services (M07, M08) change only owners and scores. Admin is read-only. Direct ORM or SQL access is not a public interface.
+- **Deletion:**
+  - Deleting a `Game` removes its players, territories, edges and capitals together.
+  - Deleting a player (or their user) who owns territories is refused (`RESTRICT`).
+  - Deleting a capital's territory is refused.
+  - Health 0 marks a destroyed capital but keeps the record, owner and player.
+- **Admin:** territories (game, name, slug, owner, score, neighbours; search by name/slug; filter by game/owner) and capitals (player, territory, health; search by player/territory; filter by game) are view-only. Adding, editing and deleting are disabled, so score and health aren't editable either.

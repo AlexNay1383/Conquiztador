@@ -2,9 +2,9 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.urls import reverse
 
-from games.models import Game, Player
+from games.models import Capital, Game, Player
 
-from .factories import create_game_with_players, create_user
+from .factories import assign_capitals, build_map, create_game_with_players, create_user
 
 
 class GamesAdminTests(TestCase):
@@ -56,6 +56,49 @@ class GamesAdminTests(TestCase):
 
         self.assertEqual(response.status_code, 403)
         self.assertTrue(Player.objects.filter(pk=player.pk).exists())
+
+    def test_territory_and_capital_pages_work_without_games(self):
+        for model in ("territory", "capital"):
+            with self.subTest(model=model):
+                response = self.client.get(reverse(f"admin:games_{model}_changelist"))
+                self.assertEqual(response.status_code, 200)
+
+    def test_territory_and_capital_pages_search_and_filter(self):
+        game = create_game_with_players(3, status=Game.Status.ACTIVE)
+        territories = build_map(game)
+        assign_capitals(game, territories, ["skali", "kaliakra", "rozova-dolina"])
+        pages = [
+            (reverse("admin:games_territory_changelist"), {"q": "skali", "game__id__exact": game.pk}),
+            (reverse("admin:games_territory_changelist"), {"owner__id__exact": game.players.first().pk}),
+            (reverse("admin:games_capital_changelist"), {"q": "Скали", "territory__game__id__exact": game.pk}),
+        ]
+        for url, params in pages:
+            with self.subTest(url=url, params=params):
+                response = self.client.get(url, params)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.context["cl"].result_count, 1)
+
+    def test_map_structure_cannot_be_edited(self):
+        game = create_game_with_players(3, status=Game.Status.ACTIVE)
+        territories = build_map(game)
+        assign_capitals(game, territories, ["skali", "kaliakra", "rozova-dolina"])
+        territory = territories["dunavia"]
+        capital = Capital.objects.first()
+
+        responses = [
+            self.client.get(reverse("admin:games_territory_add")),
+            self.client.get(reverse("admin:games_capital_add")),
+            self.client.post(reverse("admin:games_territory_change", args=[territory.pk]), {"name": "X"}),
+            self.client.post(reverse("admin:games_territory_delete", args=[territory.pk]), {"post": "yes"}),
+            self.client.post(reverse("admin:games_capital_delete", args=[capital.pk]), {"post": "yes"}),
+        ]
+
+        self.assertEqual({response.status_code for response in responses}, {403})
+        territory.refresh_from_db()
+        self.assertEqual(territory.name, "Дунавия")
+        view = self.client.get(reverse("admin:games_territory_change", args=[territory.pk]))
+        self.assertEqual(view.status_code, 200)
+        self.assertContains(view, "Скали")
 
     def test_game_status_is_read_only(self):
         game = create_game_with_players(3)

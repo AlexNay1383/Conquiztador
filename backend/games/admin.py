@@ -3,7 +3,7 @@ from django.contrib import admin
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db.models import Count
 
-from .models import Game, Player, Round
+from .models import Capital, Game, Player, Round, Territory
 
 
 class ReadOnlyAdminMixin:
@@ -96,3 +96,27 @@ class RoundAdmin(ReadOnlyAdminMixin, admin.ModelAdmin):
     list_display = ["game", "number", "type", "status", "winner", "created_at", "completed_at"]
     list_filter = ["game", "type", "status"]
     list_select_related = ["game", "winner__user"]
+
+
+@admin.register(Territory)
+class TerritoryAdmin(ReadOnlyAdminMixin, admin.ModelAdmin):
+    list_display = ["name", "slug", "game", "owner", "score", "neighbor_names"]
+    list_filter = ["game", "owner"]
+    search_fields = ["name", "slug"]
+    list_select_related = ["game", "owner__user"]
+    fields = ["game", "name", "slug", "owner", "score", "neighbor_names"]
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).prefetch_related("neighbors")
+
+    @admin.display(description="съседи")
+    def neighbor_names(self, territory):
+        return ", ".join(sorted(neighbor.name for neighbor in territory.neighbors.all()))
+
+
+@admin.register(Capital)
+class CapitalAdmin(ReadOnlyAdminMixin, admin.ModelAdmin):
+    list_display = ["territory", "player", "health"]
+    list_filter = ["territory__game"]
+    search_fields = ["player__user__username", "player__user__profile__nickname", "territory__name", "territory__slug"]
+    list_select_related = ["territory", "player__user"]

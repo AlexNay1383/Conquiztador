@@ -1,7 +1,26 @@
 from django.conf import settings
 from django.core.exceptions import ValidationError
+from django.core.validators import MaxValueValidator, RegexValidator
 from django.db import models
 from django.db.models import Q
+from django.db.models.functions import Lower
+
+SLUG_PATTERN = r"^[a-z0-9]+(-[a-z0-9]+)*$"
+NAME_PATTERN = r"^\S+( \S+)*$"
+CAPITAL_MAX_HEALTH = 3
+
+
+def normalize_territory_name(value):
+    """Trim and collapse whitespace runs to single spaces; names are compared case-insensitively."""
+    return " ".join(str(value).split())
+
+
+def normalize_territory_slug(value):
+    return str(value).strip().lower()
+
+
+def territory_name_key(value):
+    return normalize_territory_name(value).casefold()
 
 
 class GameStatus(models.TextChoices):
@@ -132,3 +151,103 @@ class Round(models.Model):
         super().clean()
         if self.winner_id is not None and self.game_id is not None and self.winner.game_id != self.game_id:
             raise ValidationError({"winner": "Победителят трябва да е играч от същата игра."})
+
+
+class Territory(models.Model):
+    game = models.ForeignKey(Game, on_delete=models.CASCADE, related_name="territories", verbose_name="игра")
+    name = models.CharField(
+        "име",
+        max_length=100,
+        validators=[RegexValidator(NAME_PATTERN, "Името не може да е празно или да има излишни интервали.")],
+    )
+    slug = models.CharField(
+        "идентификатор",
+        max_length=50,
+        validators=[RegexValidator(SLUG_PATTERN, "Само малки латински букви, цифри и единични тирета.")],
+    )
+    neighbors = models.ManyToManyField("self", symmetrical=True, blank=True, verbose_name="съседи")
+    owner = models.ForeignKey(
+        Player,
+        on_delete=models.RESTRICT,
+        null=True,
+        blank=True,
+        related_name="territories",
+        verbose_name="собственик",
+    )
+    score = models.PositiveIntegerField("точки", default=0)
+
+    class Meta:
+        ordering = ["game", "slug"]
+        verbose_name = "територия"
+        verbose_name_plural = "територии"
+        constraints = [
+            models.UniqueConstraint(fields=["game", "slug"], name="unique_territory_slug_per_game"),
+            models.UniqueConstraint(
+                Lower("name"),
+                "game",
+                name="unique_territory_name_per_game",
+                violation_error_message="Територия с това име вече съществува в играта.",
+            ),
+            models.CheckConstraint(condition=Q(slug__regex=SLUG_PATTERN), name="territory_slug_format"),
+            models.CheckConstraint(condition=Q(name__regex=NAME_PATTERN), name="territory_name_format"),
+        ]
+
+    def __str__(self):
+        return f"{self.name} (игра #{self.game_id})"
+
+    def clean_fields(self, exclude=None):
+        self.name = normalize_territory_name(self.name)
+        self.slug = normalize_territory_slug(self.slug)
+        super().clean_fields(exclude=exclude)
+
+    def clean(self):
+        super().clean()
+
+        errors = {}
+        if self.pk is not None:
+            stored = Territory.objects.filter(pk=self.pk).values("game_id", "owner_id").first()
+            if stored and stored["game_id"] != self.game_id:
+                errors["game"] = "Територията не може да се премести в друга игра."
+            capital = Capital.objects.filter(territory_id=self.pk).values_list("player_id", flat=True).first()
+            if capital is not None and capital != self.owner_id:
+                errors["owner"] = "Собственикът на столица е нейният играч."
+        if self.owner_id is not None and self.game_id is not None and self.owner.game_id != self.game_id:
+            errors["owner"] = "Собственикът трябва да е играч от същата игра."
+        if errors:
+            raise ValidationError(errors)
+
+
+class Capital(models.Model):
+    territory = models.OneToOneField(
+        Territory, on_delete=models.RESTRICT, related_name="capital", verbose_name="територия"
+    )
+    player = models.OneToOneField(Player, on_delete=models.CASCADE, related_name="capital", verbose_name="играч")
+    health = models.PositiveSmallIntegerField(
+        "здраве", default=CAPITAL_MAX_HEALTH, validators=[MaxValueValidator(CAPITAL_MAX_HEALTH)]
+    )
+
+    class Meta:
+        ordering = ["territory__game", "player"]
+        verbose_name = "столица"
+        verbose_name_plural = "столици"
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(health__gte=0, health__lte=CAPITAL_MAX_HEALTH), name="capital_health_range"
+            ),
+        ]
+
+    def __str__(self):
+        return f"Столица {self.territory.name} ({self.player})"
+
+    @property
+    def game(self):
+        return self.territory.game
+
+    def clean(self):
+        super().clean()
+        if self.territory_id is None or self.player_id is None:
+            return
+        if self.territory.game_id != self.player.game_id:
+            raise ValidationError("Столицата и играчът трябва да са от една игра.")
+        if self.territory.owner_id != self.player_id:
+            raise ValidationError({"territory": "Столицата трябва да е собственост на своя играч."})
