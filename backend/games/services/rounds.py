@@ -8,7 +8,7 @@ from django.db.models import Max
 
 from games import clock
 from games.exceptions import InvalidInputError, InvalidStateError, NotFoundError
-from games.models import Player, Round, RoundAnswer, RoundPlacement, RoundQuestion
+from games.models import Game, Player, Round, RoundAnswer, RoundPlacement, RoundQuestion
 
 from .asked_questions import NUMERIC, activate_question, add_question, describe_question, evaluate_question
 from .asked_questions import parse_answer, pick_question
@@ -137,10 +137,44 @@ def close_question(round_id):
     return round_
 
 
+def expired_questions(now):
+    """Active questions whose deadline has passed, including ones missed while nothing was running."""
+    return RoundQuestion.objects.filter(
+        status=RoundQuestion.Status.ACTIVE,
+        deadline__lte=now,
+        round__status=Round.Status.ACTIVE,
+        round__game__status=Game.Status.ACTIVE,
+    ).order_by("deadline", "pk")
+
+
+@transaction.atomic
+def close_expired_question(question_id):
+    """Close one question after its deadline. Returns False if it had already been closed by someone else."""
+    now = clock.now()
+    round_id = RoundQuestion.objects.filter(pk=question_id).values_list("round_id", flat=True).first()
+    if round_id is None:
+        raise NotFoundError("Въпросът не съществува.", "question_not_found")
+    _, round_ = lock_round(round_id)
+    question = RoundQuestion.objects.get(pk=question_id)
+    if question.deadline is not None and now < question.deadline:
+        raise InvalidStateError("Въпросът все още приема отговори.", "question_still_open")
+    return close_question_now(round_, question, now)
+
+
+@transaction.atomic
 def close_question_now(round_, question, now, rng=None):
+    """Complete the question and apply its outcome, all or nothing.
+
+    The status changes only if the question is still active at the moment of the update; when no row
+    is affected, another process has already closed it and nothing else is done.
+    """
+    closed = RoundQuestion.objects.filter(pk=question.pk, status=RoundQuestion.Status.ACTIVE).update(
+        status=RoundQuestion.Status.COMPLETED, completed_at=now
+    )
+    if not closed:
+        return False
     question.status = RoundQuestion.Status.COMPLETED
     question.completed_at = now
-    question.save(update_fields=["status", "completed_at"])
 
     outcome = evaluate_question(question)
     RoundPlacement.objects.bulk_create(
@@ -151,14 +185,14 @@ def close_question_now(round_, question, now, rng=None):
     if outcome.follow_up is None:
         reason = Round.UnresolvedReason.NOT_ENOUGH_ANSWERS if outcome.unresolved else Round.UnresolvedReason.NONE
         finish_round(round_, now, reason)
-        return
+        return True
     if question.sequence >= MAX_QUESTIONS_PER_ROUND:
         finish_round(round_, now, Round.UnresolvedReason.QUESTION_LIMIT)
-        return
+        return True
     source = pick_question(round_.game, outcome.follow_up_kind, rng or random.Random())
     if source is None:
         finish_round(round_, now, Round.UnresolvedReason.QUESTION_BANK_EXHAUSTED)
-        return
+        return True
     follow_up = outcome.follow_up
     add_question(
         round_,
@@ -170,6 +204,7 @@ def close_question_now(round_, question, now, rng=None):
         follow_up.place_count,
         start_at=now,
     )
+    return True
 
 
 def finish_round(round_, now, reason):
